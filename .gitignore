@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Maven build artifacts
+target/
+**/target/
+*.class
+
+# Vite build artifacts
+dist/
+**/dist/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDE & OS files
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Logs & testing
+*.log
+coverage/
+**/coverage/

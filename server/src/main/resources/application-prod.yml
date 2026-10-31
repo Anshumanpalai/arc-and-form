@@ -1,0 +1,71 @@
+server:
+  port: ${PORT:5000}
+  forward-headers-strategy: native
+
+spring:
+  application:
+    name: arc-and-form-commerce-api
+  profiles:
+    active: prod
+
+  datasource:
+    url: ${DATABASE_URL}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      minimum-idle: 2
+      idle-timeout: 30000
+      connection-timeout: 20000
+      max-lifetime: 1800000
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: false
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 25
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+
+app:
+  jwt:
+    secret: ${JWT_SECRET}
+    expiration-ms: ${JWT_EXPIRATION_MS:604800000} # 7 days
+    cookie-name: arc_token
+    cookie-secure: true
+    cookie-same-site: None # Required for cross-domain frontend/backend (e.g. Vercel -> Render)
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS}
+  admin:
+    seed-email: ${ADMIN_EMAIL:admin@arcandform.com}
+    seed-password: ${ADMIN_PASSWORD}
+  rate-limit:
+    capacity: 60
+    refill-tokens: 60
+    refill-duration-seconds: 60
+
+stripe:
+  secret-key: ${STRIPE_SECRET_KEY}
+  webhook-secret: ${STRIPE_WEBHOOK_SECRET}
+  success-url: ${STRIPE_SUCCESS_URL}
+  cancel-url: ${STRIPE_CANCEL_URL}
+
+cloudinary:
+  cloud-name: ${CLOUDINARY_CLOUD_NAME}
+  api-key: ${CLOUDINARY_API_KEY}
+  api-secret: ${CLOUDINARY_API_SECRET}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
