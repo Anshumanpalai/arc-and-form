@@ -152,7 +152,7 @@ npm test
 - **Orders & Inventory**: Transactional stock reservations, concurrency guards, minor unit calculations.
 - **Stripe Webhooks**: Cryptographic verification, payment status checks, permanent idempotency, duplicate race resilience.
 - **Admin Dashboard**: Revenue aggregation from paid orders, low stock alerts, recent orders.
-- **Admin Order Management**: Spring Data `Page` pagination, status transition validation, restocking on cancellation.
+- **Admin Order Management**: Paginated admin views, status transition validation, restocking on cancellation.
 - **Cloudinary Media**: MIME type validation, binary magic bytes spoofing detection, file size limits, SDK stream mocking.
 - **Frontend Client Tests**: Cart persistence, threshold calculations, and currency formatting.
 
