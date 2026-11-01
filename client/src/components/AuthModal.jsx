@@ -206,20 +206,13 @@ export function AuthModal() {
               {/* Demo Accounts */}
               <div className="mt-4 border-t border-stone-100 pt-3 text-[11px] text-stone-500">
                 <span className="block mb-1.5">Quick fill demo account:</span>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => fillDemo('admin@arcandform.com', 'Admin@123!')}
-                    className="flex-1 border border-stone-200 py-1 hover:border-charcoal transition-colors text-charcoal"
-                  >
-                    Admin
-                  </button>
+                <div>
                   <button
                     type="button"
                     onClick={() => fillDemo('customer@arcandform.com', 'Customer@123!')}
-                    className="flex-1 border border-stone-200 py-1 hover:border-charcoal transition-colors text-charcoal"
+                    className="w-full border border-stone-200 py-1 hover:border-charcoal transition-colors text-charcoal"
                   >
-                    Customer
+                    Demo Customer
                   </button>
                 </div>
               </div>

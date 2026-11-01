@@ -1,10 +1,9 @@
 import { app } from './app.js';
 import { env } from './config/env.js';
 import { connectDB, disconnectDB } from './config/db.js';
-import { OrderService } from './services/orderService.js';
+import { defaultRecoveryScheduler } from './services/recoveryScheduler.js';
 
 let serverInstance = null;
-let recoveryInterval = null;
 
 async function startServer() {
   try {
@@ -13,21 +12,13 @@ async function startServer() {
     // Connect to database
     await connectDB();
 
-    serverInstance = app.listen(env.PORT, () => {
-      console.log(`[server] ARC & FORM backend running on http://localhost:${env.PORT}`);
-      console.log(`[server] Health check available at http://localhost:${env.PORT}/health`);
+    serverInstance = app.listen(env.PORT, '0.0.0.0', () => {
+      console.log(`[server] ARC & FORM backend running on http://0.0.0.0:${env.PORT}`);
+      console.log(`[server] Health check available at http://0.0.0.0:${env.PORT}/health`);
     });
 
-    // Schedule periodic reservation expiry recovery (every 15 minutes)
-    const RECOVERY_INTERVAL_MS = 15 * 60 * 1000;
-    recoveryInterval = setInterval(async () => {
-      try {
-        await OrderService.recoverExpiredReservations();
-      } catch (err) {
-        console.error('[server] Error running reservation recovery:', err.message);
-      }
-    }, RECOVERY_INTERVAL_MS);
-    if (recoveryInterval.unref) recoveryInterval.unref();
+    // Start background recovery scheduler for reservations and stale refunds
+    defaultRecoveryScheduler.start();
   } catch (err) {
     console.error(`[server] Startup failed: ${err.message}`);
     process.exit(1);
@@ -37,10 +28,8 @@ async function startServer() {
 async function shutdown(signal) {
   console.log(`\n[server] Received ${signal}. Commencing graceful shutdown...`);
 
-  if (recoveryInterval) {
-    clearInterval(recoveryInterval);
-    recoveryInterval = null;
-  }
+  // Stop background recovery scheduler cleanly
+  defaultRecoveryScheduler.stop();
 
   if (serverInstance) {
     await new Promise((resolve) => serverInstance.close(resolve));

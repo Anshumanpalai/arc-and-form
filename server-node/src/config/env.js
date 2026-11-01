@@ -30,6 +30,11 @@ const parseOrigins = (raw) => {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+
+  if (list.includes('*')) {
+    throw new Error('FATAL: Wildcard origin "*" is strictly prohibited in CORS_ALLOWED_ORIGINS when credentials are enabled.');
+  }
+
   return list.length > 0 ? list : fallback;
 };
 
@@ -86,7 +91,7 @@ export const env = Object.freeze({
   JWT_SECRET,
   JWT_EXPIRATION_MS: Number.parseInt(process.env.JWT_EXPIRATION_MS, 10) || 604800000, // 7 days in ms
   COOKIE_NAME: process.env.COOKIE_NAME || 'arc_token',
-  COOKIE_SECURE: parseBool(process.env.COOKIE_SECURE, isProduction),
+  COOKIE_SECURE: parseBool(process.env.COOKIE_SECURE, isProduction || process.env.COOKIE_SAME_SITE?.toLowerCase() === 'none'),
   COOKIE_SAME_SITE: process.env.COOKIE_SAME_SITE || (isProduction ? 'None' : 'Lax'),
   CORS_ALLOWED_ORIGINS: parseOrigins(process.env.CORS_ALLOWED_ORIGINS),
   CLIENT_URL,

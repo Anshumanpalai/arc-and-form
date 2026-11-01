@@ -31,18 +31,6 @@ export function AdminGuard({ children }) {
             The studio operations console is strictly reserved for verified personnel.
           </p>
 
-          <div className="mt-6 border border-stone-200 bg-[#F7F6F2] p-4 text-left font-mono text-xs">
-            <p className="text-[9px] uppercase tracking-widest text-muted mb-1.5 font-semibold">
-              Demo Administrator Credentials
-            </p>
-            <p className="text-charcoal text-[11px]">
-              Email: <code className="font-semibold">admin@arcandform.com</code>
-            </p>
-            <p className="text-charcoal text-[11px] mt-1">
-              Password: <code className="font-semibold">Admin@123!</code>
-            </p>
-          </div>
-
           <div className="mt-6 space-y-3">
             <button
               onClick={() => openAuthModal('login')}

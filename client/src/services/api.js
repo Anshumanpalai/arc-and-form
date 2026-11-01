@@ -10,16 +10,26 @@ export class ApiError extends Error {
 
 export async function api(path, options = {}) {
   const headers = { ...options.headers };
+  headers['X-Requested-With'] = headers['X-Requested-With'] || 'XMLHttpRequest';
   if (options.body && typeof options.body === 'string') {
     headers['Content-Type'] = headers['Content-Type'] || 'application/json';
   }
 
   const url = `${baseUrl}${path}`;
-  const response = await fetch(url, {
-    credentials: 'include',
-    headers,
-    ...options,
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      credentials: 'include',
+      headers,
+      ...options,
+    });
+  } catch (networkErr) {
+    throw new ApiError(
+      'Network error: unable to connect to server. Please ensure the backend is running.',
+      0,
+      networkErr.message
+    );
+  }
 
   if (response.status === 204) return null;
 

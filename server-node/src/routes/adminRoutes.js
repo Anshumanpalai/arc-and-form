@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { AdminService } from '../services/adminService.js';
 import { AdminProductService } from '../services/adminProductService.js';
+import { OrderService } from '../services/orderService.js';
 import { CloudinaryService } from '../services/cloudinaryService.js';
 import { authenticate, requireAdmin } from '../middleware/authMiddleware.js';
 import { handleImageUpload } from '../middleware/uploadMiddleware.js';
@@ -57,6 +58,25 @@ router.patch('/orders/:id/status', async (req, res, next) => {
   try {
     const order = await AdminService.updateOrderStatus(req.params.id, req.body);
     res.status(200).json(order);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/orders/:id/return', async (req, res, next) => {
+  try {
+    const order = await AdminService.processOrderReturn(req.params.id, req.body);
+    res.status(200).json(order);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/orders/reconcile-refunds', async (req, res, next) => {
+  try {
+    const thresholdMinutes = Number(req.body?.thresholdMinutes) || 15;
+    const stats = await OrderService.recoverStalePendingRefunds({ thresholdMinutes });
+    res.status(200).json(stats);
   } catch (err) {
     next(err);
   }

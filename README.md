@@ -74,7 +74,7 @@
 | **Payments** | Stripe Node SDK (`stripe`), Stripe Checkout Sessions, Cryptographically Verified Webhooks |
 | **Media Pipeline** | Official Cloudinary Node SDK, Multer (Memory Storage), Magic Byte Signature Verification |
 | **Rate Limiter** | Sliding-window token bucket per IP address (10 req/min) |
-| **Testing** | Node.js native test runner (`node:test`, `node:assert/strict`) — **110 passing automated tests across 16 suites** |
+| **Testing** | Node.js native test runner (`node:test`, `node:assert/strict`) — **159 passing automated tests across 18 suites** |
 
 ---
 
@@ -145,14 +145,15 @@ Run the full end-to-end automated test suite with a single command from the root
 npm test
 ```
 
-### Coverage: 110 tests across 16 test suites
-- **Authentication Flow**: Customer registration, login, logout, cookie security, password verification.
+### Coverage: 159 tests across 18 test suites
+- **Authentication Flow & CSRF Protection**: Customer registration, login, logout, cookie security, password verification, CSRF token validation.
 - **Authorization & RBAC**: Customer isolation, admin route enforcement (`401`/`403`).
 - **Product Catalog**: Public browsing, category filtering, search, pagination, admin CRUD.
 - **Orders & Inventory**: Transactional stock reservations, concurrency guards, minor unit calculations.
-- **Stripe Webhooks**: Cryptographic verification, payment status checks, permanent idempotency, duplicate race resilience.
-- **Admin Dashboard**: Revenue aggregation from paid orders, low stock alerts, recent orders.
-- **Admin Order Management**: Paginated admin views, status transition validation, restocking on cancellation.
+- **Stripe Webhooks & Refunds**: Cryptographic verification, payment status checks, permanent idempotency, duplicate race resilience, partial refunds, long-term crash recovery.
+- **Automated Refund Recovery Scheduler**: Background reconciliation of stale `REFUND_PENDING` operations via Stripe PaymentIntent records.
+- **Admin Dashboard**: Revenue aggregation from paid orders (net of refunds), low stock alerts, recent orders.
+- **Admin Order Management**: Paginated admin views, status transition validation, restocking on cancellation, inspected return restocking.
 - **Cloudinary Media**: MIME type validation, binary magic bytes spoofing detection, file size limits, SDK stream mocking.
 - **Frontend Client Tests**: Cart persistence, threshold calculations, and currency formatting.
 

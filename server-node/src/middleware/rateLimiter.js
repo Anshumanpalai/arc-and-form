@@ -23,10 +23,8 @@ class RateLimiter {
   }
 
   getClientIp(req) {
-    const forwarded = req.headers['x-forwarded-for'];
-    if (forwarded && typeof forwarded === 'string') {
-      return forwarded.split(',')[0].trim();
-    }
+    // Rely exclusively on Express-validated req.ip (configured with trust proxy: 1)
+    // rather than raw unparsed client-supplied headers to prevent IP spoofing
     return req.ip || req.socket?.remoteAddress || '127.0.0.1';
   }
 

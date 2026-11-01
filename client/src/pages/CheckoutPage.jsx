@@ -14,6 +14,7 @@ export function CheckoutPage() {
   const { items } = useCartStore();
   const subtotal = cartSubtotal(items);
   const user = useAuthStore((state) => state.user);
+  const openAuthModal = useAuthStore((state) => state.openAuthModal);
 
   const [formData, setFormData] = useState({
     fullName: user?.name || '',
@@ -23,6 +24,13 @@ export function CheckoutPage() {
     state: '',
     postalCode: '',
     country: 'United States',
+  });
+
+  // Keep full name in sync if user logs in after mounting
+  useState(() => {
+    if (user?.name && !formData.fullName) {
+      setFormData((prev) => ({ ...prev, fullName: user.name }));
+    }
   });
 
   const [error, setError] = useState('');
@@ -39,6 +47,12 @@ export function CheckoutPage() {
 
     if (items.length === 0) {
       setError('Your shopping bag is empty.');
+      return;
+    }
+
+    if (!user) {
+      openAuthModal('login');
+      setError('Please sign in or create an account to proceed with checkout.');
       return;
     }
 
@@ -73,7 +87,12 @@ export function CheckoutPage() {
         throw new Error('Checkout URL was not returned by the server.');
       }
     } catch (err) {
-      setError(err.message || 'Unable to initiate checkout. Please verify your details.');
+      if (err.status === 401) {
+        openAuthModal('login');
+        setError('Your session has expired. Please sign in again to complete checkout.');
+      } else {
+        setError(err.message || 'Unable to initiate checkout. Please verify your details.');
+      }
       setIsSubmitting(false);
     }
   }
@@ -116,6 +135,19 @@ export function CheckoutPage() {
             <h1 className="font-serif text-2xl sm:text-3xl font-normal text-charcoal">Shipping Address</h1>
             <p className="mt-1 text-xs text-charcoal/60">Please enter your delivery destination.</p>
           </div>
+
+          {!user && (
+            <div className="mt-4 border border-stone-200 bg-white p-3.5 text-xs text-charcoal/80 flex items-center justify-between">
+              <span>Have an account? Sign in for seamless order tracking.</span>
+              <button
+                type="button"
+                onClick={() => openAuthModal('login')}
+                className="font-semibold underline underline-offset-4 hover:text-charcoal"
+              >
+                Sign In
+              </button>
+            </div>
+          )}
 
           {error && (
             <div role="alert" className="mt-4 border border-red-200 bg-red-50 p-3 text-xs text-red-700">

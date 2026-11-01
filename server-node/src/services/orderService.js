@@ -182,6 +182,7 @@ export class OrderService {
     const orderNumber = sessionObj.metadata?.orderNumber || sessionObj.client_reference_id;
     const orderId = sessionObj.metadata?.orderId;
     const sessionId = sessionObj.id;
+    const paymentIntentId = sessionObj.payment_intent;
 
     // Fast-path idempotency check
     const existingEvent = await ProcessedEvent.findOne({ eventId });
@@ -190,7 +191,7 @@ export class OrderService {
       return { received: true, duplicate: true };
     }
 
-    if (!orderNumber && !sessionId && !orderId) {
+    if (!orderNumber && !sessionId && !orderId && !paymentIntentId) {
       // Event without order linkage (irrelevant event, record and return)
       await ProcessedEvent.create({ eventId, eventType });
       return { received: true, ignored: true };
@@ -218,9 +219,15 @@ export class OrderService {
         if (!order && sessionId) {
           order = await Order.findOne({ stripeSessionId: sessionId }).session(mongoSession);
         }
+        if (!order && paymentIntentId) {
+          order = await Order.findOne({ stripePaymentIntentId: paymentIntentId }).session(mongoSession);
+        }
+        if (!order && sessionObj.id) {
+          order = await Order.findOne({ 'refundDetails.refundId': sessionObj.id }).session(mongoSession);
+        }
 
         if (!order) {
-          console.warn(`[stripe-webhook] No order found matching orderNumber=${orderNumber}, sessionId=${sessionId}`);
+          console.warn(`[stripe-webhook] No order found matching orderNumber=${orderNumber}, sessionId=${sessionId}, paymentIntentId=${paymentIntentId}`);
           return;
         }
 
@@ -231,17 +238,36 @@ export class OrderService {
           return;
         }
 
-        // Checkout/Webhook Race Condition Handling:
-        // If order already has a registered stripeSessionId, ensure it matches incoming sessionId
-        if (order.stripeSessionId && sessionId && order.stripeSessionId !== sessionId) {
-          console.error(`[stripe-webhook] Mismatch: incoming session ${sessionId} does not match order session ${order.stripeSessionId}`);
+        // Strict metadata orderId verification
+        if (sessionObj.metadata?.orderId && sessionObj.metadata.orderId !== order._id.toString()) {
+          console.error(`[stripe-webhook] Mismatch: metadata orderId ${sessionObj.metadata.orderId} !== ${order._id}`);
           isVerificationFailed = true;
           return;
         }
 
-        // If webhook arrived before checkout response saved sessionId, safely associate it now
-        if (!order.stripeSessionId && sessionId) {
-          order.stripeSessionId = sessionId;
+        // Strict PaymentIntent association verification for refund and payment events
+        if (
+          paymentIntentId &&
+          order.stripePaymentIntentId &&
+          paymentIntentId !== order.stripePaymentIntentId
+        ) {
+          console.error(`[stripe-webhook] PaymentIntent mismatch for ${order.orderNumber}: expected ${order.stripePaymentIntentId}, got ${paymentIntentId}`);
+          isVerificationFailed = true;
+          return;
+        }
+
+        // Checkout/Webhook Race Condition Handling (strictly for checkout.session events):
+        if (eventType.startsWith('checkout.session')) {
+          if (order.stripeSessionId && sessionId && order.stripeSessionId !== sessionId) {
+            console.error(`[stripe-webhook] Mismatch: incoming session ${sessionId} does not match order session ${order.stripeSessionId}`);
+            isVerificationFailed = true;
+            return;
+          }
+
+          // If webhook arrived before checkout response saved sessionId, safely associate it now
+          if (!order.stripeSessionId && sessionId) {
+            order.stripeSessionId = sessionId;
+          }
         }
 
         // Handle Event Lifecycle
@@ -272,11 +298,163 @@ export class OrderService {
           // Mark PAID if not already marked
           if (order.status !== 'PAID') {
             order.status = 'PAID';
+            order.paymentStatus = 'PAID';
             if (sessionObj.payment_intent) {
               order.stripePaymentIntentId = sessionObj.payment_intent;
             }
             await order.save({ session: mongoSession });
             console.log(`[stripe-webhook] Order ${order.orderNumber} successfully marked as PAID.`);
+          }
+        } else if (eventType === 'charge.refunded' || eventType === 'refund.updated') {
+          // Stripe refund confirmation, partial refund, or status update webhook
+          order.refundDetails = order.refundDetails || {};
+
+          // Currency verification
+          if (sessionObj.currency && order.currency && sessionObj.currency.toLowerCase() !== (order.currency || 'usd').toLowerCase()) {
+            console.error(`[stripe-webhook] Currency mismatch for refund on ${order.orderNumber}: expected ${order.currency}, got ${sessionObj.currency}`);
+            isVerificationFailed = true;
+            return;
+          }
+
+          const orderTotalMinor = Math.round(order.total * 100);
+
+          if (eventType === 'charge.refunded') {
+            // charge.refunded provides the cumulative amount_refunded on the charge in integer minor units
+            const cumulativeRefundedMinor = Number.isInteger(sessionObj.amount_refunded)
+              ? sessionObj.amount_refunded
+              : (sessionObj.amount || 0);
+
+            // Strict excessive refund validation: cumulative refund cannot exceed original order total
+            if (cumulativeRefundedMinor > orderTotalMinor) {
+              console.error(`[stripe-webhook] Excessive refund amount rejected for ${order.orderNumber}: ${cumulativeRefundedMinor} minor units exceeds order total ${orderTotalMinor}`);
+              isVerificationFailed = true;
+              return;
+            }
+
+            order.refundDetails.amountRefundedMinor = cumulativeRefundedMinor;
+            order.refundDetails.amount = Number((cumulativeRefundedMinor / 100).toFixed(2));
+            order.refundDetails.status = 'SUCCEEDED';
+            order.refundDetails.completedAt = order.refundDetails.completedAt || new Date();
+
+            if (sessionObj.refunds?.data?.[0]?.id) {
+              order.refundDetails.refundId = sessionObj.refunds.data[0].id;
+            }
+
+            if (cumulativeRefundedMinor >= orderTotalMinor) {
+              order.paymentStatus = 'REFUNDED';
+              // Full refund confirmed: If order was marked CANCELLED, release stock if still reserved
+              if (order.status === 'CANCELLED' && order.stockReserved) {
+                for (const item of order.items) {
+                  await Product.findByIdAndUpdate(
+                    item.product,
+                    { $inc: { stock: item.quantity } },
+                    { session: mongoSession }
+                  );
+                }
+                order.stockReserved = false;
+              }
+              console.log(`[stripe-webhook] Order ${order.orderNumber} fully refunded (${cumulativeRefundedMinor} minor units).`);
+            } else if (cumulativeRefundedMinor > 0) {
+              // PARTIAL REFUND: Never mark order fully REFUNDED! Never release stock on partial refund!
+              order.paymentStatus = 'PARTIALLY_REFUNDED';
+              console.log(`[stripe-webhook] Order ${order.orderNumber} partially refunded (${cumulativeRefundedMinor}/${orderTotalMinor} minor units).`);
+            }
+
+            await order.save({ session: mongoSession });
+          } else if (eventType === 'refund.updated') {
+            // refund.updated is scoped to an individual refund object
+            const refundStatus = sessionObj.status; // 'succeeded', 'failed', 'pending', 'canceled'
+            const refundId = sessionObj.id;
+
+            if (!refundId || typeof refundId !== 'string') {
+              console.error(`[stripe-webhook] Invalid or missing refundId for ${order.orderNumber}`);
+              isVerificationFailed = true;
+              return;
+            }
+
+            if (refundStatus === 'succeeded') {
+              const refundsList = order.refundDetails.refunds || [];
+              const alreadyCounted = refundsList.some(
+                (r) => r.refundId === refundId && r.status === 'succeeded'
+              );
+
+              if (!alreadyCounted) {
+                const thisAmountMinor = sessionObj.amount || 0;
+                if (thisAmountMinor <= 0) {
+                  console.error(`[stripe-webhook] Invalid refund amount ${thisAmountMinor} on ${order.orderNumber}`);
+                  isVerificationFailed = true;
+                  return;
+                }
+
+                const currentRefunded = order.refundDetails.amountRefundedMinor || 0;
+                // Strict excessive cumulative refund validation
+                if (currentRefunded + thisAmountMinor > orderTotalMinor) {
+                  console.error(`[stripe-webhook] Excessive cumulative refund rejected for ${order.orderNumber}: ${currentRefunded + thisAmountMinor} exceeds ${orderTotalMinor}`);
+                  isVerificationFailed = true;
+                  return;
+                }
+
+                order.refundDetails.amountRefundedMinor = currentRefunded + thisAmountMinor;
+                order.refundDetails.amount = Number(
+                  (order.refundDetails.amountRefundedMinor / 100).toFixed(2)
+                );
+                refundsList.push({
+                  refundId,
+                  amountMinor: thisAmountMinor,
+                  status: 'succeeded',
+                  createdAt: new Date(),
+                });
+                order.refundDetails.refunds = refundsList;
+              }
+
+              order.refundDetails.refundId = refundId;
+              order.refundDetails.status = 'SUCCEEDED';
+              order.refundDetails.completedAt = new Date();
+
+              if (order.refundDetails.amountRefundedMinor >= orderTotalMinor) {
+                order.paymentStatus = 'REFUNDED';
+                if (order.status === 'CANCELLED' && order.stockReserved) {
+                  for (const item of order.items) {
+                    await Product.findByIdAndUpdate(
+                      item.product,
+                      { $inc: { stock: item.quantity } },
+                      { session: mongoSession }
+                    );
+                  }
+                  order.stockReserved = false;
+                }
+                console.log(`[stripe-webhook] Order ${order.orderNumber} fully refunded (${order.refundDetails.amountRefundedMinor} minor units).`);
+              } else if (order.refundDetails.amountRefundedMinor > 0) {
+                order.paymentStatus = 'PARTIALLY_REFUNDED';
+                console.log(`[stripe-webhook] Order ${order.orderNumber} partially refunded (${order.refundDetails.amountRefundedMinor}/${orderTotalMinor} minor units).`);
+              }
+
+              await order.save({ session: mongoSession });
+            } else if (refundStatus === 'pending') {
+              // Out-of-order guard: Never revert already succeeded or partially/fully refunded order to PENDING
+              if (
+                order.paymentStatus !== 'REFUNDED' &&
+                order.paymentStatus !== 'PARTIALLY_REFUNDED'
+              ) {
+                order.paymentStatus = 'REFUND_PENDING';
+                order.refundDetails.status = 'PENDING';
+                order.refundDetails.refundId = refundId;
+                await order.save({ session: mongoSession });
+                console.log(`[stripe-webhook] Order ${order.orderNumber} refund status recorded as PENDING.`);
+              }
+              // Invariant: Never release inventory on pending refunds
+            } else if (refundStatus === 'failed') {
+              // Out-of-order guard: Never mark failed if order is already fully REFUNDED
+              if (order.paymentStatus !== 'REFUNDED') {
+                order.paymentStatus = 'REFUND_FAILED';
+                order.refundDetails.status = 'FAILED';
+                order.refundDetails.failureReason =
+                  sessionObj.failure_reason || 'Refund failed at provider';
+                await order.save({ session: mongoSession });
+                console.warn(`[stripe-webhook] Order ${order.orderNumber} refund marked as FAILED.`);
+              }
+              // Invariant: Never release inventory on failed refunds
+            }
           }
         } else if (eventType === 'checkout.session.async_payment_failed' || eventType === 'checkout.session.expired') {
           // Expiration / failure:
@@ -291,6 +469,7 @@ export class OrderService {
             }
             order.stockReserved = false;
             order.status = 'CANCELLED';
+            order.paymentStatus = 'UNPAID';
             await order.save({ session: mongoSession });
             console.log(`[stripe-webhook] Order ${order.orderNumber} cancelled and stock released.`);
           }
@@ -359,6 +538,7 @@ export class OrderService {
 
           lockedOrder.stockReserved = false;
           lockedOrder.status = 'CANCELLED';
+          lockedOrder.paymentStatus = 'UNPAID';
           await lockedOrder.save({ session: mongoSession });
           recoveredOrderNumbers.push(lockedOrder.orderNumber);
           console.log(`[reservation-recovery] Released stock for expired pending order ${lockedOrder.orderNumber}`);
@@ -371,6 +551,173 @@ export class OrderService {
     return {
       recoveredCount: recoveredOrderNumbers.length,
       recoveredOrderNumbers,
+    };
+  }
+
+  /**
+   * Stale Pending-Refund Recovery & Scheduled Reconciliation Mechanism:
+   * Finds operations that remain in REFUND_PENDING beyond thresholdMinutes.
+   * Retrieves the existing Stripe refund using the persisted refund ID or idempotency key.
+   * Never blindly creates a second refund.
+   * Completes Phase 3 database reconciliation if Stripe confirms success.
+   * Preserves pending state when Stripe has not reached a terminal state.
+   * Handles failed refunds without restoring inventory.
+   * Restores inventory exactly once after confirmed full refund.
+   * Safe under concurrent execution and server restarts.
+   */
+  static async recoverStalePendingRefunds({ thresholdMinutes = 15 } = {}) {
+    const cutoff = new Date(Date.now() - thresholdMinutes * 60 * 1000);
+
+    const staleOrders = await Order.find({
+      paymentStatus: 'REFUND_PENDING',
+      $or: [
+        { updatedAt: { $lt: cutoff } },
+        { 'refundDetails.requestedAt': { $lt: cutoff } },
+        { 'refundDetails.requestedAt': null },
+      ],
+    });
+
+    const reconciled = [];
+    const preservedPending = [];
+    const failed = [];
+
+    for (const stale of staleOrders) {
+      // 1. Identify persisted idempotency key and refundId
+      const refundId = stale.refundDetails?.refundId;
+      const idempotencyKey =
+        stale.refundDetails?.cancellationIdempotencyKey ||
+        stale.refundDetails?.returnIdempotencyKey ||
+        stale.refundDetails?.idempotencyKey;
+
+      if (!refundId && !idempotencyKey) {
+        console.warn(
+          `[refund-recovery] Order ${stale.orderNumber} in REFUND_PENDING has no refund ID or idempotency key. Skipping.`
+        );
+        continue;
+      }
+
+      // 2. Query Stripe outside MongoDB transaction (zero open DB transactions during network I/O)
+      let stripeRefund = null;
+      try {
+        if (refundId) {
+          stripeRefund = await StripeService.getRefund(refundId);
+        }
+
+        // Long-term crash recovery check: If refundId was not yet saved (e.g. process crashed),
+        // query Stripe's permanent refund records for this PaymentIntent to find the matching refund
+        // even after the 24-hour idempotency key cache has expired.
+        if (!stripeRefund && stale.stripePaymentIntentId) {
+          stripeRefund = await StripeService.findMatchingRefund({
+            paymentIntentId: stale.stripePaymentIntentId,
+            idempotencyKey,
+            orderNumber: stale.orderNumber,
+          });
+        }
+
+        if (!stripeRefund && idempotencyKey) {
+          // Stripe idempotency guarantee: Calling createRefund with an already-used idempotency key
+          // retrieves the existing refund without creating a duplicate refund.
+          stripeRefund = await StripeService.createRefund({
+            paymentIntentId: stale.stripePaymentIntentId || `mock_pi_${stale.orderNumber}`,
+            amountCents: Math.round(stale.total * 100),
+            idempotencyKey,
+            metadata: {
+              orderNumber: stale.orderNumber,
+              action: 'recovery',
+              idempotencyKey,
+            },
+          });
+        }
+      } catch (stripeErr) {
+        console.warn(
+          `[refund-recovery] Failed to retrieve refund from Stripe for ${stale.orderNumber}:`,
+          stripeErr.message
+        );
+        continue;
+      }
+
+      if (!stripeRefund) {
+        continue;
+      }
+
+      // 3. Complete Phase 3 DB transaction atomically
+      const mongoSession = await mongoose.startSession();
+      try {
+        await mongoSession.withTransaction(async () => {
+          // Atomic lock: Only operate if STILL in REFUND_PENDING state
+          const lockedOrder = await Order.findOne({
+            _id: stale._id,
+            paymentStatus: 'REFUND_PENDING',
+          }).session(mongoSession);
+
+          if (!lockedOrder) return; // Concurrently resolved by webhook or retry
+
+          const refundStatus = stripeRefund.status;
+
+          if (refundStatus === 'succeeded') {
+            lockedOrder.status = 'CANCELLED';
+            lockedOrder.paymentStatus = 'REFUNDED';
+            if (!lockedOrder.refundDetails) lockedOrder.refundDetails = {};
+            lockedOrder.refundDetails.status = 'SUCCEEDED';
+            lockedOrder.refundDetails.refundId = stripeRefund.id;
+            const totalMinor = Math.round(lockedOrder.total * 100);
+            lockedOrder.refundDetails.amountRefundedMinor =
+              stripeRefund.amount || totalMinor;
+            lockedOrder.refundDetails.amount =
+              lockedOrder.refundDetails.amountRefundedMinor / 100;
+            lockedOrder.refundDetails.completedAt = new Date();
+
+            // Restore inventory exactly once after confirmed full refund
+            if (lockedOrder.stockReserved) {
+              for (const item of lockedOrder.items) {
+                await Product.findByIdAndUpdate(
+                  item.product,
+                  { $inc: { stock: item.quantity } },
+                  { session: mongoSession }
+                );
+              }
+              lockedOrder.stockReserved = false;
+            }
+
+            await lockedOrder.save({ session: mongoSession });
+            reconciled.push(lockedOrder.orderNumber);
+            console.log(
+              `[refund-recovery] Order ${lockedOrder.orderNumber} successfully reconciled to REFUNDED.`
+            );
+          } else if (refundStatus === 'pending') {
+            // Preserve pending state when Stripe has not reached a terminal state
+            preservedPending.push(lockedOrder.orderNumber);
+            console.log(
+              `[refund-recovery] Order ${lockedOrder.orderNumber} refund remains pending at Stripe. Preserving state.`
+            );
+          } else if (refundStatus === 'failed' || refundStatus === 'canceled') {
+            // Handle failed refunds without restoring inventory
+            lockedOrder.paymentStatus = 'REFUND_FAILED';
+            if (!lockedOrder.refundDetails) lockedOrder.refundDetails = {};
+            lockedOrder.refundDetails.status = 'FAILED';
+            lockedOrder.refundDetails.failureReason =
+              stripeRefund.failure_reason ||
+              'Refund failed at provider during recovery check';
+            // Inventory is NOT restored
+            await lockedOrder.save({ session: mongoSession });
+            failed.push(lockedOrder.orderNumber);
+            console.warn(
+              `[refund-recovery] Order ${lockedOrder.orderNumber} marked as REFUND_FAILED.`
+            );
+          }
+        });
+      } finally {
+        await mongoSession.endSession();
+      }
+    }
+
+    return {
+      reconciledCount: reconciled.length,
+      reconciledOrderNumbers: reconciled,
+      preservedPendingCount: preservedPending.length,
+      preservedPendingOrderNumbers: preservedPending,
+      failedCount: failed.length,
+      failedOrderNumbers: failed,
     };
   }
 

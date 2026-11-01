@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Check } from 'lucide-react';
+import { Check, Loader2 } from 'lucide-react';
 import { Price } from '../components/Price';
 import { useCartStore } from '../store/cartStore';
 import { api } from '../services/api';
@@ -10,37 +10,72 @@ export function OrderSuccessPage() {
   const orderNumberParam = searchParams.get('order_number');
 
   const [order, setOrder] = useState(null);
+  const [isVerifying, setIsVerifying] = useState(true);
 
   useEffect(() => {
     useCartStore.getState().clearCart();
 
+    let attempts = 0;
+    let timeoutId;
+    let isMounted = true;
+
     async function loadOrder() {
-      if (orderNumberParam) {
-        try {
-          const res = await api(`/api/orders/${orderNumberParam}`);
-          if (res?.order) {
-            setOrder(res.order);
+      if (!orderNumberParam) {
+        setIsVerifying(false);
+        return;
+      }
+
+      try {
+        const res = await api(`/api/orders/${encodeURIComponent(orderNumberParam)}`);
+        if (!isMounted) return;
+
+        if (res?.order) {
+          setOrder(res.order);
+
+          // If still PENDING, Stripe webhook might still be delivering; poll up to 5 times
+          if (res.order.status === 'PENDING' && attempts < 5) {
+            attempts += 1;
+            timeoutId = setTimeout(loadOrder, 2000);
+            return;
           }
-        } catch (err) {
-          console.error('Failed to load order confirmation:', err);
         }
+      } catch (err) {
+        console.error('Failed to load order confirmation:', err);
+      } finally {
+        if (isMounted) setIsVerifying(false);
       }
     }
 
     loadOrder();
+
+    return () => {
+      isMounted = false;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, [orderNumberParam]);
+
+  const isPaid = order?.status === 'PAID';
+  const isPending = !order || order?.status === 'PENDING';
 
   return (
     <main className="container-page py-16 sm:py-24 max-w-xl text-center bg-[#FAF9F6]">
       <div className="mx-auto mb-5 grid size-12 place-items-center bg-charcoal text-white">
-        <Check size={22} />
+        {isPending && isVerifying ? (
+          <Loader2 size={22} className="animate-spin" />
+        ) : (
+          <Check size={22} />
+        )}
       </div>
 
       <h1 className="font-serif text-3xl font-normal text-charcoal">
-        Thank You for Your Order
+        {isPaid ? 'Thank You for Your Order' : 'Order Received'}
       </h1>
       <p className="mt-2 text-sm text-charcoal/70">
-        Your payment has been received and your order is being prepared.
+        {isPaid
+          ? 'Your payment has been cryptographically verified and your order is being prepared.'
+          : isPending
+          ? 'We have received your order reservation and are confirming payment with Stripe.'
+          : `Order status: ${order?.status}`}
       </p>
 
       <div className="mt-10 border border-stone-200 bg-white p-6 sm:p-8 text-left space-y-5">
@@ -51,8 +86,14 @@ export function OrderSuccessPage() {
               {order?.orderNumber || orderNumberParam || 'Processing...'}
             </p>
           </div>
-          <span className="text-xs bg-stone-100 px-2.5 py-1 text-charcoal">
-            {order?.status || 'Confirmed'}
+          <span
+            className={`text-xs px-2.5 py-1 ${
+              isPaid
+                ? 'bg-emerald-50 text-emerald-800 font-medium'
+                : 'bg-stone-100 text-charcoal'
+            }`}
+          >
+            {order?.status || 'Processing...'}
           </span>
         </div>
 

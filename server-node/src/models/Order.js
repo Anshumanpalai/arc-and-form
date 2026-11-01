@@ -67,9 +67,56 @@ const orderSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['PENDING', 'PAID', 'SHIPPED', 'DELIVERED', 'CANCELLED'],
+      enum: ['PENDING', 'PAID', 'SHIPPED', 'DELIVERED', 'CANCELLED', 'RETURNED'],
       default: 'PENDING',
       index: true,
+    },
+    paymentStatus: {
+      type: String,
+      enum: ['UNPAID', 'PAID', 'REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED', 'REFUND_FAILED'],
+      default: 'UNPAID',
+      index: true,
+    },
+    refundDetails: {
+      refundId: { type: String, default: null },
+      idempotencyKey: { type: String, default: null },
+      cancellationIdempotencyKey: { type: String, default: null },
+      returnIdempotencyKey: { type: String, default: null },
+      amount: { type: Number, default: 0 },
+      amountRefundedMinor: { type: Number, default: 0 },
+      currency: { type: String, default: 'usd', lowercase: true },
+      status: {
+        type: String,
+        enum: ['NONE', 'PENDING', 'SUCCEEDED', 'FAILED'],
+        default: 'NONE',
+        index: true,
+      },
+      reason: { type: String, default: null },
+      failureReason: { type: String, default: null },
+      requestedAt: { type: Date, default: null },
+      completedAt: { type: Date, default: null },
+      refunds: [
+        {
+          refundId: { type: String, required: true },
+          amountMinor: { type: Number, required: true },
+          status: { type: String, default: 'succeeded' },
+          createdAt: { type: Date, default: Date.now },
+        },
+      ],
+    },
+    returnDetails: {
+      status: {
+        type: String,
+        enum: ['NONE', 'REQUESTED', 'RECEIVED', 'INSPECTED', 'RESTOCKED', 'REJECTED'],
+        default: 'NONE',
+      },
+      requestedAt: { type: Date, default: null },
+      receivedAt: { type: Date, default: null },
+      inspectedAt: { type: Date, default: null },
+      restockedAt: { type: Date, default: null },
+      restocked: { type: Boolean, default: false },
+      condition: { type: String, default: null, trim: true },
+      notes: { type: String, default: null, trim: true },
     },
     shippingAddress: {
       type: shippingAddressSchema,
@@ -148,5 +195,10 @@ const orderSchema = new mongoose.Schema(
 
 orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ status: 1, stockReserved: 1, createdAt: 1 });
+orderSchema.index({ status: 1, paymentStatus: 1 });
+orderSchema.index({ 'refundDetails.idempotencyKey': 1 }, { sparse: true });
+orderSchema.index({ 'refundDetails.cancellationIdempotencyKey': 1 }, { sparse: true });
+orderSchema.index({ 'refundDetails.returnIdempotencyKey': 1 }, { sparse: true });
+orderSchema.index({ 'refundDetails.refundId': 1 }, { sparse: true });
 
 export const Order = mongoose.model('Order', orderSchema);
